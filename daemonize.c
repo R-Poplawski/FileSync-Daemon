@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <time.h>
+#include <limits.h>
 #include "filesync.h"
 
 #define EXIT_SUCCESS 0
@@ -181,10 +182,45 @@ int main(int argc, char* argv[])
         print_usage();
         return 0;
     }
+
+    char real_src[PATH_MAX];
+    char real_dst[PATH_MAX];
+    realpath(src, real_src);
+    realpath(dst, real_dst);
+
+	if (!is_directory(real_src))
+	{
+		printf("Invalid source directory!\n");
+		return 0;
+	}
+	if (!is_directory(real_dst))
+	{
+		printf("Invalid destination directory!\n");
+		return 0;
+	}
+    if (strcmp(real_src, real_dst) == 0)
+    {
+        printf("The destination directory must be different from the source directory!\n");
+        return 0;
+    }
+	
+    if (recursive)
+    {
+        if (path_contains(real_src, real_dst))
+        {
+            printf("Source directory must not contain the destination directory!\n");
+            return 0;
+        }
+        else if (path_contains(real_dst, real_src))
+        {
+            printf("Destination directory must not contain the source directory!\n");
+            return 0;
+        }
+    }
     
     if (single)
     {
-        run_filesync(src, dst, recursive, size_threshold);
+        run_filesync(real_src, real_dst, recursive, size_threshold);
         return 0;
     }
 
@@ -194,11 +230,11 @@ int main(int argc, char* argv[])
 
     while (1)
     {
-        run_filesync(src, dst, recursive, size_threshold);
+        run_filesync(real_src, real_dst, recursive, size_threshold);
         sleep(sleep_time);
     }
 
-    writeToLog("File Sync Daemon terminated.\n");
+    writeToLog("File Sync Daemon terminated\n");
     closelog();
 
     return EXIT_SUCCESS;
