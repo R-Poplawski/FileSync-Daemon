@@ -9,6 +9,8 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <time.h>
 #include "filesync.h"
 
 #define EXIT_SUCCESS 0
@@ -16,7 +18,7 @@
 #define USE_SYSLOG 1
 
 #if !USE_SYSLOG
-int logfd;
+int logfd = 0;
 #endif
 
 void openLogFile()
@@ -37,13 +39,22 @@ void closeLogFile()
     #endif
 }
 
-void writeToLog(char *str)
+void writeToLog(const char *str)
 {
     #if USE_SYSLOG
     syslog(LOG_NOTICE, str);
     #else
-    write(logfd, str, strlen(str));
+    if (logfd != 0) write(logfd, str, strlen(str));
+    else printf(str);
     #endif
+}
+
+void handle_SIGUSR1(int signum)
+{
+    if (signum == SIGUSR1)
+    {
+        writeToLog("SIGUSR1\n");
+    }
 }
 
 static void make_daemon()
@@ -72,6 +83,10 @@ static void make_daemon()
     //TODO: Implement a working signal handler */
     signal(SIGCHLD, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
+    //signal(SIGUSR1, handle_SIGUSR1);
+    struct sigaction sa;
+    sa.sa_handler = handle_SIGUSR1;
+    sigaction(SIGUSR1, &sa, NULL);
 
     /* Fork off for the second time*/
     pid = fork();
@@ -92,13 +107,13 @@ static void make_daemon()
 
     /* Change the working directory to the root directory */
     /* or another appropriated directory */
-    #if USE_SYSLOG
+    /*#if USE_SYSLOG
     chdir("/");
-    #endif
+    #endif*/
 
     /* Close all open file descriptors */
     int x;
-    for (x = sysconf(_SC_OPEN_MAX); x>=0; x--)
+    for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--)
     {
         close (x);
     }
@@ -107,7 +122,7 @@ static void make_daemon()
     openLogFile();
 }
 
-#define print_usage() ( printf("Usage: %s source_path destination_path [-R] [-t sleep_time] [-s size_treshold]\n", argv[0]) )
+#define print_usage() ( printf("Usage: %s source_path destination_path [-R] [-t sleep_time] [-s size_threshold] [-S]\n", argv[0]) )
 
 int main(int argc, char* argv[])
 {   
@@ -117,17 +132,25 @@ int main(int argc, char* argv[])
         return 0;
     }
     char *src, *dst;
-    bool recursive = false;
-    ssize_t size_treshold = 1000000;
+    bool recursive = false, single = false;
+    ssize_t size_threshold = 1000000;
     int sleep_time = 300;
     int i, op = 0;
     for (i = 1; i < argc; i++)
     {
-        if (argv[i][0] == '-')
+        if (argv[i][0] != '-')
         {
-            if (argv[i][1] == 'R') recursive = true;
-            else if (argv[i][1] == 't')
-            {
+            op++;
+            if (op == 1) src = argv[i];
+            else if (op == 2) dst = argv[i];
+            continue;
+        }
+        switch (argv[i][1])
+        {
+            case 'R':
+                recursive = true;
+                break;
+            case 't':
                 i++;
                 int s = atoi(argv[i]);
                 if (s > 0) sleep_time = s;
@@ -136,27 +159,21 @@ int main(int argc, char* argv[])
                     printf("Invalid sleep time!\n");
                     return 0;
                 }
-            }
-            else if (argv[i][1] == 's')
-            {
+                break;
+            case 's':
                 i++;
-                if (sscanf(argv[i], "%zu", &size_treshold) != 1)
+                if (sscanf(argv[i], "%zu", &size_threshold) != 1)
                 {
-                    printf("Invalid size treshold!\n");
+                    printf("Invalid size threshold!\n");
                     return 0;
                 }
-            }
-            else
-            {
+                break;
+            case 'S':
+                single = true;
+                break;
+            default:
                 print_usage();
                 return 0;
-            }
-        }
-        else
-        {
-            op++;
-            if (op == 1) src = argv[i];
-            else if (op == 2) dst = argv[i];
         }
     }
     if (op != 2)
@@ -165,16 +182,19 @@ int main(int argc, char* argv[])
         return 0;
     }
     
+    if (single)
+    {
+        run_filesync(src, dst, recursive, size_threshold);
+        return 0;
+    }
+
     make_daemon();
 
-    writeToLog("File Sync Daemon started.\n");
+    writeToLog("File Sync Daemon started\n");
 
     while (1)
     {
-        char str[256];
-        snprintf(str, sizeof(str), "run_filesync(\"%s\", \"%s\", %s, %zu)\n", src, dst, recursive ? "true" : "false", size_treshold);
-        writeToLog(str);
-        run_filesync(src, dst, recursive, size_treshold);
+        run_filesync(src, dst, recursive, size_threshold);
         sleep(sleep_time);
     }
 
