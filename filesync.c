@@ -11,15 +11,43 @@
 
 void writeToLog(const char *str);
 
-void get_mtime(const char *path, time_t *mtime)
+typedef enum file_type
+{
+    FT_NONE,
+    FT_REGULAR,
+    FT_DIRECTORY,
+    FT_OTHER
+} file_type;
+
+file_type get_file_type(char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return FT_NONE;
+    if (S_ISREG(st.st_mode)) return FT_REGULAR;
+    if (S_ISDIR(st.st_mode)) return FT_DIRECTORY;
+    return FT_OTHER;
+}
+
+time_t get_mtime(const char *path)
 {
     struct stat statbuf;
     if (stat(path, &statbuf) == -1)
     {
         perror(path);
-        mtime = NULL;
+        return -1;
     }
-    *mtime = statbuf.st_mtime;
+    return statbuf.st_mtime;
+}
+
+off_t get_size(const char *path)
+{
+	struct stat statbuf;
+    if (stat(path, &statbuf) == -1)
+    {
+        perror(path);
+        return -1;
+    }
+    return statbuf.st_size;
 }
 
 bool is_directory(const char *path)
@@ -38,51 +66,151 @@ bool path_contains(const char *path1, const char *path2)
     return (strncmp(pth1, path2, strlen(pth1)) == 0);
 }
 
-void listFiles(const char *path, bool recursive)
+void compare_directories(const char *src, const char *dst, bool recursive, ssize_t size_threshold)
 {
-    DIR *dir = opendir(path);
-    if (dir == NULL)
+	DIR *src_dir = opendir(src);
+    if (src_dir == NULL)
     {
-        char str[4096];
-        snprintf(str, sizeof(str), "Failed opening directory (%s)\n", path);
+        char str[PATH_MAX + 30];
+        snprintf(str, sizeof(str), "Failed opening directory (%s)\n", src);
         writeToLog(str);
         return;
     }
-    struct dirent *ent;
-    while((ent = readdir(dir)) != NULL)
+    struct dirent *src_ent;
+    while ((src_ent = readdir(src_dir)) != NULL)
     {
-        char pth[PATH_MAX];
-        snprintf(pth, sizeof(pth), "%s/%s", path, ent->d_name);
-        if (ent->d_type == DT_DIR && strcmp(ent->d_name, ".") != 0 && strcmp(ent->d_name, "..") != 0) // directory
+        char src_ent_path[PATH_MAX], dst_ent_path[PATH_MAX];
+        snprintf(src_ent_path, sizeof(src_ent_path), "%s/%s", src, src_ent->d_name);
+        snprintf(dst_ent_path, sizeof(dst_ent_path), "%s/%s", dst, src_ent->d_name);
+              
+        time_t src_mtime = get_mtime(src_ent_path);
+        char ts[32];
+        strftime(ts, sizeof(ts), "%Y/%m/%d %H:%M:%S", localtime(&src_mtime));
+        char str[PATH_MAX + 40];
+        snprintf(str, sizeof(str), "%s \"%s\"", ts, src_ent_path);
+
+        if (recursive && src_ent->d_type == DT_DIR && strcmp(src_ent->d_name, ".") != 0 && strcmp(src_ent->d_name, "..") != 0) // directory
         {
-            time_t t;
-            get_mtime(pth, &t);
-            char ts[32];
-            strftime(ts, sizeof(ts), "%Y/%m/%d %H:%M:%S", localtime(&t));
-            char str[350];
-            snprintf(str, sizeof(str), "D: %s \"%s/%s\"\n", ts, path, ent->d_name);
-            writeToLog(str);
-            if (recursive) listFiles(pth, true);
+            char s[PATH_MAX + 40];
+            snprintf(s, sizeof(s), "D: %s\n", str);
+            writeToLog(s);
+            file_type dst_ft = get_file_type(dst_ent_path);
+            switch (dst_ft)
+            {
+                case FT_DIRECTORY:
+                    writeToLog("Destination directory exists\n");
+                    compare_directories(src_ent_path, dst_ent_path, true, size_threshold);
+                    break;
+                case FT_NONE:
+                    writeToLog("Destination directry doesn't exist\n");
+                    break;
+                default:
+                    writeToLog("Other type named like the source directory exists at the destination\n");
+                    break;
+            }
         }
-        else if (ent->d_type == DT_REG) // regular file
+        else if (src_ent->d_type == DT_REG) // regular file
         {
-            time_t t;
-            get_mtime(pth, &t);
-            char ts[32];
-            strftime(ts, sizeof(ts), "%Y/%m/%d %H:%M:%S", localtime(&t));
-            char str[350];
-            snprintf(str, sizeof(str), "F: %s \"%s/%s\"\n", ts, path, ent->d_name);
-            writeToLog(str);
+            off_t src_size = get_size(src_ent_path);
+            char s[PATH_MAX + 40];
+            snprintf(s, sizeof(s), "F: %s size: %llu (%s)\n", str, (unsigned long long)src_size, (src_size <= size_threshold ? "doesn't exceed threshold" : "exceeds threshold"));
+            writeToLog(s);
+            file_type dst_ft = get_file_type(dst_ent_path);
+            switch (dst_ft)
+            {
+                case FT_REGULAR:
+                    {
+                        time_t dst_mtime = get_mtime(dst_ent_path);
+                        char dst_ts[32];
+                        strftime(dst_ts, sizeof(dst_ts), "%Y/%m/%d %H:%M:%S", localtime(&dst_mtime));
+                        snprintf(str, sizeof(str), "File exists at the destination (%s)\n", (dst_mtime == src_mtime ? "same modification time" : "different modification time"));
+                        writeToLog(str);
+                    }
+                    break;
+                case FT_NONE:
+                    writeToLog("File doesn't exist at the destination\n");
+                    break;
+                default:
+                    writeToLog("Other type named like the source file exists at the destination\n");
+                    break;
+            }
         }
     }
-    closedir(dir);
+    closedir(src_dir);
 }
 
-void run_filesync(const char* src, const char* dst, bool is_recursive, ssize_t size_threshold)
+void remove_extras(const char*src, const char* dst, bool recursive)
+{
+    DIR *dst_dir = opendir(dst);
+    if (dst_dir == NULL)
+    {
+        char str[PATH_MAX + 30];
+        snprintf(str, sizeof(str), "Failed opening directory (%s)\n", dst);
+        writeToLog(str);
+        return;
+    }
+    struct dirent *dst_ent;
+    while ((dst_ent = readdir(dst_dir)) != NULL)
+    {
+        char src_ent_path[PATH_MAX], dst_ent_path[PATH_MAX];
+        snprintf(src_ent_path, sizeof(src_ent_path), "%s/%s", src, dst_ent->d_name);
+        snprintf(dst_ent_path, sizeof(dst_ent_path), "%s/%s", dst, dst_ent->d_name);
+
+        time_t t = get_mtime(dst_ent_path);
+        char ts[32];
+        strftime(ts, sizeof(ts), "%Y/%m/%d %H:%M:%S", localtime(&t));
+        char str[PATH_MAX + 40];
+        snprintf(str, sizeof(str), "%s \"%s\"\n", ts, dst_ent_path);
+
+        if (recursive && dst_ent->d_type == DT_DIR && strcmp(dst_ent->d_name, ".") != 0 && strcmp(dst_ent->d_name, "..") != 0) // directory
+        {
+            char s[PATH_MAX + 40] = "D: ";
+            strcat(s, str);
+            writeToLog(s);
+            file_type src_ft = get_file_type(src_ent_path);
+            switch (src_ft)
+            {
+                case FT_DIRECTORY:
+                    writeToLog("Source directory exists\n");
+                    break;
+                case FT_NONE:
+                    writeToLog("Source directory doesn't exist\n");
+                    break;
+                default:
+                    writeToLog("Other type named like the destination directory exists at the source\n");
+                    break;
+            }
+        }
+        else if (dst_ent->d_type == DT_REG) // regular file
+        {
+            char s[PATH_MAX + 40] = "F: ";
+            strcat(s, str);
+            writeToLog(s);
+            file_type src_ft = get_file_type(src_ent_path);
+            switch (src_ft)
+            {
+                case FT_REGULAR:
+                    writeToLog("Source file exists\n");
+                    break;
+                case FT_NONE:
+                    writeToLog("Source file doesn't exist\n");
+                    break;
+                default:
+                    writeToLog("Other type named like the destination file exists at the source\n");
+                    break;
+            }
+        }
+    }
+    closedir(dst_dir);
+}
+
+void run_filesync(const char* src, const char* dst, bool is_recursive, off_t size_threshold)
 {
     char str[256];
     snprintf(str, sizeof(str), "run_filesync(\"%s\", \"%s\", %s, %zu)\n", src, dst, is_recursive ? "true" : "false", size_threshold);
     writeToLog(str);
-    listFiles(src, is_recursive);
-    listFiles(dst, is_recursive);
+    writeToLog("Searching for files to remove from destination that don't exist at source\n");
+    remove_extras(src, dst, is_recursive);
+    writeToLog("Searching for files to copy from source to destination\n");
+	compare_directories(src, dst, is_recursive, size_threshold);
 }

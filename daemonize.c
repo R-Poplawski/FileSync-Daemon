@@ -19,13 +19,16 @@
 #define USE_SYSLOG 1
 
 #if !USE_SYSLOG
-int logfd = 0;
+int logfd = -1;
+#else
+bool uselog = false;
 #endif
 
 void openLogFile()
 {
     #if USE_SYSLOG
     openlog("filesyncd", LOG_PID, LOG_DAEMON);
+	uselog = true;
     #else
     logfd = open("filesyncd.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
     #endif
@@ -35,6 +38,7 @@ void closeLogFile()
 {
     #if USE_SYSLOG
     closelog();
+	uselog = false;
     #else
     close(logfd);
     #endif
@@ -43,11 +47,11 @@ void closeLogFile()
 void writeToLog(const char *str)
 {
     #if USE_SYSLOG
-    syslog(LOG_NOTICE, str);
+    if (uselog) syslog(LOG_NOTICE, str);
     #else
-    if (logfd != 0) write(logfd, str, strlen(str));
-    else printf(str);
+    if (logfd != -1) write(logfd, str, strlen(str));
     #endif
+	else printf(str);
 }
 
 void handle_SIGUSR1(int signum)
@@ -123,7 +127,12 @@ static void make_daemon()
     openLogFile();
 }
 
-#define print_usage() ( printf("Usage: %s source_path destination_path [-R] [-t sleep_time] [-s size_threshold] [-S]\n", argv[0]) )
+#define print_usage() ( printf("Usage: %s source_path destination_path [-OPTIONS]\n"\
+                                "OPTIONS:\n"\
+                                "-R\t\t\tRecursive synchronization (include subdirectories)\n"\
+                                "-t sleep_time\t\tSets number of seconds between synchronizations\n"\
+                                "-s size_threshold\tSets file size threshold at which mmap will be used\n"\
+                                "-S\t\t\tSingle synchronization\n", argv[0]) )
 
 int main(int argc, char* argv[])
 {   
@@ -134,7 +143,7 @@ int main(int argc, char* argv[])
     }
     char *src, *dst;
     bool recursive = false, single = false;
-    ssize_t size_threshold = 1000000;
+    off_t size_threshold = 1000000;
     int sleep_time = 300;
     int i, op = 0;
     for (i = 1; i < argc; i++)
@@ -188,22 +197,22 @@ int main(int argc, char* argv[])
     realpath(src, real_src);
     realpath(dst, real_dst);
 
-	if (!is_directory(real_src))
-	{
-		printf("Invalid source directory!\n");
-		return 0;
-	}
-	if (!is_directory(real_dst))
-	{
-		printf("Invalid destination directory!\n");
-		return 0;
-	}
+    if (!is_directory(real_src))
+    {
+        printf("Invalid source directory!\n");
+        return 0;
+    }
+    if (!is_directory(real_dst))
+    {
+        printf("Invalid destination directory!\n");
+        return 0;
+    }
     if (strcmp(real_src, real_dst) == 0)
     {
         printf("The destination directory must be different from the source directory!\n");
         return 0;
     }
-	
+    
     if (recursive)
     {
         if (path_contains(real_src, real_dst))
