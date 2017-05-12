@@ -19,7 +19,7 @@ typedef enum file_type
     FT_OTHER
 } file_type;
 
-file_type get_file_type(char *path)
+file_type get_file_type(const char *path)
 {
     struct stat st;
     if (stat(path, &st) != 0) return FT_NONE;
@@ -41,7 +41,7 @@ time_t get_mtime(const char *path)
 
 off_t get_size(const char *path)
 {
-	struct stat statbuf;
+    struct stat statbuf;
     if (stat(path, &statbuf) == -1)
     {
         perror(path);
@@ -68,7 +68,7 @@ bool path_contains(const char *path1, const char *path2)
 
 void compare_directories(const char *src, const char *dst, bool recursive, ssize_t size_threshold)
 {
-	DIR *src_dir = opendir(src);
+    DIR *src_dir = opendir(src);
     if (src_dir == NULL)
     {
         char str[PATH_MAX + 30];
@@ -79,6 +79,8 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
     struct dirent *src_ent;
     while ((src_ent = readdir(src_dir)) != NULL)
     {
+        if (strcmp(src_ent->d_name, ".") == 0 || strcmp(src_ent->d_name, "..") == 0) continue;
+        
         char src_ent_path[PATH_MAX], dst_ent_path[PATH_MAX];
         snprintf(src_ent_path, sizeof(src_ent_path), "%s/%s", src, src_ent->d_name);
         snprintf(dst_ent_path, sizeof(dst_ent_path), "%s/%s", dst, src_ent->d_name);
@@ -89,7 +91,7 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
         char str[PATH_MAX + 40];
         snprintf(str, sizeof(str), "%s \"%s\"", ts, src_ent_path);
 
-        if (recursive && src_ent->d_type == DT_DIR && strcmp(src_ent->d_name, ".") != 0 && strcmp(src_ent->d_name, "..") != 0) // directory
+        if (recursive && src_ent->d_type == DT_DIR) // directory
         {
             char s[PATH_MAX + 40];
             snprintf(s, sizeof(s), "D: %s\n", str);
@@ -139,7 +141,53 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
     closedir(src_dir);
 }
 
-void remove_extras(const char*src, const char* dst, bool recursive)
+int remove_directory(const char *path)
+{
+    char str[PATH_MAX + 30];
+    snprintf(str, sizeof(str), "Directory to remove: %s\n", path);
+    writeToLog(str);
+
+    DIR *dir = opendir(path);
+    if (dir == NULL) return -1;
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL)
+    {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+
+        char ent_path[PATH_MAX];
+        snprintf(ent_path, sizeof(ent_path), "%s/%s", path, ent->d_name);
+
+        switch (ent->d_type)
+        {
+            case DT_DIR:
+                {
+                    int res = remove_directory(ent_path);
+                    if (res != 0)
+                    {
+                        closedir(dir);
+                        return res;
+                    }
+                }
+                break;
+            case DT_REG:
+                snprintf(str, sizeof(str), "File to remove: %s\n", ent_path);
+                writeToLog(str);
+                // TODO: Remove file
+                break;
+            default:
+                snprintf(str, sizeof(str), "Other type in directory to remove: %s\n", ent_path);
+                writeToLog(str);
+                closedir(dir);
+                return -2;
+        }
+    }
+    closedir(dir);
+    // TODO: Remove directory at path
+    return 0;
+}
+
+void remove_extras(const char *src, const char *dst, bool recursive)
 {
     DIR *dst_dir = opendir(dst);
     if (dst_dir == NULL)
@@ -152,6 +200,8 @@ void remove_extras(const char*src, const char* dst, bool recursive)
     struct dirent *dst_ent;
     while ((dst_ent = readdir(dst_dir)) != NULL)
     {
+        if (strcmp(dst_ent->d_name, ".") == 0 || strcmp(dst_ent->d_name, "..") == 0) continue;
+
         char src_ent_path[PATH_MAX], dst_ent_path[PATH_MAX];
         snprintf(src_ent_path, sizeof(src_ent_path), "%s/%s", src, dst_ent->d_name);
         snprintf(dst_ent_path, sizeof(dst_ent_path), "%s/%s", dst, dst_ent->d_name);
@@ -162,7 +212,7 @@ void remove_extras(const char*src, const char* dst, bool recursive)
         char str[PATH_MAX + 40];
         snprintf(str, sizeof(str), "%s \"%s\"\n", ts, dst_ent_path);
 
-        if (recursive && dst_ent->d_type == DT_DIR && strcmp(dst_ent->d_name, ".") != 0 && strcmp(dst_ent->d_name, "..") != 0) // directory
+        if (recursive && dst_ent->d_type == DT_DIR) // directory
         {
             char s[PATH_MAX + 40] = "D: ";
             strcat(s, str);
@@ -172,9 +222,17 @@ void remove_extras(const char*src, const char* dst, bool recursive)
             {
                 case FT_DIRECTORY:
                     writeToLog("Source directory exists\n");
+                    remove_extras(src_ent_path, dst_ent_path, true);
                     break;
                 case FT_NONE:
-                    writeToLog("Source directory doesn't exist\n");
+                    {
+                        writeToLog("Source directory doesn't exist\n");
+                        int res = remove_directory(dst_ent_path);
+                        if (res == 0) snprintf(s, sizeof(s), "Directory removed (%s)\n", dst_ent_path);
+                        else if (res == -1) snprintf(s, sizeof(s), "Failed removing directory (%s), couldn't open directory\n", dst_ent_path);
+                        else if (res == -2) snprintf(s, sizeof(s), "Failed removing directory (%s), other file type exists in the directory\n", dst_ent_path);
+                        writeToLog(s);
+                    }
                     break;
                 default:
                     writeToLog("Other type named like the destination directory exists at the source\n");
@@ -204,7 +262,7 @@ void remove_extras(const char*src, const char* dst, bool recursive)
     closedir(dst_dir);
 }
 
-void run_filesync(const char* src, const char* dst, bool is_recursive, off_t size_threshold)
+void run_filesync(const char *src, const char *dst, bool is_recursive, off_t size_threshold)
 {
     char str[256];
     snprintf(str, sizeof(str), "run_filesync(\"%s\", \"%s\", %s, %zu)\n", src, dst, is_recursive ? "true" : "false", size_threshold);
@@ -212,5 +270,5 @@ void run_filesync(const char* src, const char* dst, bool is_recursive, off_t siz
     writeToLog("Searching for files to remove from destination that don't exist at source\n");
     remove_extras(src, dst, is_recursive);
     writeToLog("Searching for files to copy from source to destination\n");
-	compare_directories(src, dst, is_recursive, size_threshold);
+    compare_directories(src, dst, is_recursive, size_threshold);
 }

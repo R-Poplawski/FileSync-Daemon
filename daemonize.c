@@ -134,7 +134,7 @@ static void make_daemon()
                                 "-s size_threshold\tSets file size threshold at which mmap will be used\n"\
                                 "-S\t\t\tSingle synchronization\n", argv[0]) )
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {   
     if (argc < 3)
     {
