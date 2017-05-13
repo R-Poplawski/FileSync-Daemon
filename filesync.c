@@ -9,6 +9,8 @@
 #include <time.h>
 #include <utime.h>
 #include <limits.h>
+#include <fcntl.h>
+#include <stdlib.h>
 
 void writeToLog(const char *str);
 
@@ -88,6 +90,10 @@ bool path_contains(const char *path1, const char *path2)
 
 void compare_directories(const char *src, const char *dst, bool recursive, ssize_t size_threshold)
 {
+    int BUF_SIZE = 16384;
+    char *buffer = (char*)malloc(BUF_SIZE);
+    int src_fd, dst_fd;
+    ssize_t size_src, size_dst;
     DIR *src_dir = opendir(src);
     if (src_dir == NULL)
     {
@@ -122,6 +128,7 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
                 case FT_DIRECTORY:
                     writeToLog("Destination directory exists\n");
                     compare_directories(src_ent_path, dst_ent_path, true, size_threshold);
+		    
                     break;
                 case FT_NONE:
                     writeToLog("Destination directory doesn't exist\n");
@@ -146,6 +153,25 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
                         char dst_ts[32];
                         strftime(dst_ts, sizeof(dst_ts), "%Y/%m/%d %H:%M:%S", localtime(&dst_mtime));
                         snprintf(str, sizeof(str), "File exists at the destination (%s)\n", (dst_mtime == src_mtime ? "same modification time" : "different modification time"));
+			
+			if(dst_mtime != src_mtime)
+			{
+				src_fd = open(src_ent_path, O_RDONLY);
+				dst_fd = open(dst_ent_path, O_WRONLY);
+				if(src_size <= size_threshold)
+				{
+					while((size_src = read(src_fd, buffer, BUF_SIZE)) > 0)
+					{
+						snprintf(str, sizeof(str), "while\n");
+						size_dst = write (dst_fd, buffer,(ssize_t)size_src);
+						if(size_dst != size_src)
+						{
+							snprintf(str, sizeof(str), "Error\n");
+						}
+					}
+				}
+
+			}
                         writeToLog(str);
                     }
                     break;
