@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
+#include <utime.h>
 #include <limits.h>
 
 void writeToLog(const char *str);
@@ -28,6 +29,17 @@ file_type get_file_type(const char *path)
     return FT_OTHER;
 }
 
+time_t get_atime(const char *path)
+{
+    struct stat statbuf;
+    if (stat(path, &statbuf) == -1)
+    {
+        perror(path);
+        return -1;
+    }
+    return statbuf.st_mtime;
+}
+
 time_t get_mtime(const char *path)
 {
     struct stat statbuf;
@@ -37,6 +49,14 @@ time_t get_mtime(const char *path)
         return -1;
     }
     return statbuf.st_mtime;
+}
+
+int set_mtime(const char *path, time_t mtime)
+{
+    struct utimbuf utb;
+    utb.modtime = mtime;
+    utb.actime = get_atime(path);
+    return utime(path, &utb);
 }
 
 off_t get_size(const char *path)
@@ -104,7 +124,7 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
                     compare_directories(src_ent_path, dst_ent_path, true, size_threshold);
                     break;
                 case FT_NONE:
-                    writeToLog("Destination directry doesn't exist\n");
+                    writeToLog("Destination directory doesn't exist\n");
                     break;
                 default:
                     writeToLog("Other type named like the source directory exists at the destination\n");
@@ -173,7 +193,8 @@ int remove_directory(const char *path)
             case DT_REG:
                 snprintf(str, sizeof(str), "File to remove: %s\n", ent_path);
                 writeToLog(str);
-                // TODO: Remove file
+                if (remove(ent_path) == 0) writeToLog("Destination file removed\n");
+                else return -3;
                 break;
             default:
                 snprintf(str, sizeof(str), "Other type in directory to remove: %s\n", ent_path);
@@ -183,7 +204,7 @@ int remove_directory(const char *path)
         }
     }
     closedir(dir);
-    // TODO: Remove directory at path
+    if (remove(path) != 0) return -3;
     return 0;
 }
 
@@ -231,11 +252,14 @@ void remove_extras(const char *src, const char *dst, bool recursive)
                         if (res == 0) snprintf(s, sizeof(s), "Directory removed (%s)\n", dst_ent_path);
                         else if (res == -1) snprintf(s, sizeof(s), "Failed removing directory (%s), couldn't open directory\n", dst_ent_path);
                         else if (res == -2) snprintf(s, sizeof(s), "Failed removing directory (%s), other file type exists in the directory\n", dst_ent_path);
+                        else if (res == -3) snprintf(s, sizeof(s), "Failed removing directory (%s)\n", dst_ent_path);
                         writeToLog(s);
                     }
                     break;
                 default:
                     writeToLog("Other type named like the destination directory exists at the source\n");
+                    if (remove_directory(dst_ent_path) == 0) writeToLog("Destination directory removed\n");
+                    else writeToLog("Failed to remove destination directory\n");
                     break;
             }
         }
@@ -252,9 +276,13 @@ void remove_extras(const char *src, const char *dst, bool recursive)
                     break;
                 case FT_NONE:
                     writeToLog("Source file doesn't exist\n");
+                    if (remove(dst_ent_path) == 0) writeToLog("Destination file removed\n");
+                    else writeToLog("Failed to remove destination file\n");
                     break;
                 default:
                     writeToLog("Other type named like the destination file exists at the source\n");
+                    if (remove(dst_ent_path) == 0) writeToLog("Destination file removed\n");
+                    else writeToLog("Failed to remove destination file\n");
                     break;
             }
         }
