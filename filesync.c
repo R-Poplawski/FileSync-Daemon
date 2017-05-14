@@ -89,7 +89,7 @@ bool path_contains(const char *path1, const char *path2)
     return (strncmp(pth1, path2, strlen(pth1)) == 0);
 }
 
-int copy(char *src_ent_path, char *dst_ent_path)
+int copy_rw(const char *src_ent_path, const char *dst_ent_path)
 {
     int src_fd, dst_fd;
     ssize_t size_src, size_dst;
@@ -97,13 +97,11 @@ int copy(char *src_ent_path, char *dst_ent_path)
     src_fd = open(src_ent_path, O_RDONLY);
     if (src_fd == -1)
     {
-        writeToLog("Source file can't be opened\n");
         return -1;
     }
     dst_fd = open(dst_ent_path, O_WRONLY | O_TRUNC | O_CREAT, 0644);
     if (src_fd == -1) 
     {
-        writeToLog("Destination file can't be opened\n");
         close(src_fd);
         return -2;
     }
@@ -129,7 +127,7 @@ int copy(char *src_ent_path, char *dst_ent_path)
     return 0;
 }
 
-int copy_mmap(char *src_ent_path, char *dst_ent_path)
+int copy_mmap(const char *src_ent_path, const char *dst_ent_path)
 {
     struct stat st;
     int src_fd, dst_fd;
@@ -139,7 +137,6 @@ int copy_mmap(char *src_ent_path, char *dst_ent_path)
     src_fd = open(src_ent_path, O_RDONLY);
     if (src_fd == -1)
     {
-
         return -1;
     }
     dst_fd = open(dst_ent_path, O_WRONLY | O_TRUNC | O_CREAT, 0644);
@@ -158,7 +155,77 @@ int copy_mmap(char *src_ent_path, char *dst_ent_path)
     return 0;
 }
 
-void compare_directories(const char *src, const char *dst, bool recursive, ssize_t size_threshold)
+void copy_file(const char *src, const char *dst, bool use_mmap)
+{
+    int res = (use_mmap ? copy_mmap(src, dst) : copy_rw(src, dst));
+    switch (res)
+    {
+        case 0:
+            writeToLog("File copied\n");
+            break;
+        case -1:
+            writeToLog("Source file couldn't be opened\n");
+            return;
+        case -2:
+            writeToLog("Destination file couldn't be opened\n");
+            return;
+        case -3:
+            writeToLog("Error while writing to file\n");
+            return;
+        default:
+            writeToLog("Couldn't copy file\n");
+            return;
+    }
+    time_t src_mtime = get_mtime(src);
+    if (set_mtime(dst, src_mtime) != 0) 
+    {
+        writeToLog("Failed to change modification time\n");
+        return;
+    }
+    writeToLog("Modification time changed\n");
+}
+
+void copy_directory(const char *src, const char *dst, off_t size_threshold)
+{
+    if (mkdir(dst, 0644) != 0)
+    {
+        writeToLog("Couldn't create a directory at the destination\n");
+        return;
+    }
+    writeToLog("Directory created\n");
+    
+    DIR *src_dir = opendir(src);
+    if (src_dir == NULL)
+    {
+        char str[PATH_MAX + 30];
+        snprintf(str, sizeof(str), "Failed opening directory (%s)\n", src);
+        writeToLog(str);
+        return;
+    }
+
+    struct dirent *src_ent;
+    while ((src_ent = readdir(src_dir)) != NULL)
+    {
+        if (strcmp(src_ent->d_name, ".") == 0 || strcmp(src_ent->d_name, "..") == 0) continue;
+        
+        char src_ent_path[PATH_MAX], dst_ent_path[PATH_MAX];
+        snprintf(src_ent_path, sizeof(src_ent_path), "%s/%s", src, src_ent->d_name);
+        snprintf(dst_ent_path, sizeof(dst_ent_path), "%s/%s", dst, src_ent->d_name);
+
+        if (src_ent->d_type == DT_DIR)
+        {
+            copy_directory(src_ent_path, dst_ent_path, size_threshold);
+        }
+        else if (src_ent->d_type == DT_REG)
+        {
+            off_t src_size = get_size(src_ent_path);
+            copy_file(src_ent_path, dst_ent_path, src_size > size_threshold);
+        }
+    }
+    closedir(src_dir);
+}
+
+void compare_directories(const char *src, const char *dst, bool recursive, off_t size_threshold)
 {
     DIR *src_dir = opendir(src);
     if (src_dir == NULL)
@@ -197,6 +264,7 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
                     break;
                 case FT_NONE:
                     writeToLog("Destination directory doesn't exist\n");
+                    copy_directory(src_ent_path, dst_ent_path, size_threshold);
                     break;
                 default:
                     writeToLog("Other type named like the source directory exists at the destination\n");
@@ -218,32 +286,12 @@ void compare_directories(const char *src, const char *dst, bool recursive, ssize
                         snprintf(str, sizeof(str), "File exists at the destination (%s)\n", (dst_mtime == src_mtime ? "same modification time" : "different modification time"));
                         writeToLog(str);
                         if (dst_mtime == src_mtime) break; //daty modyfikacji nie różnią się od siebie
-                        int res;
-                        if (src_size <= size_threshold) res = copy(src_ent_path, dst_ent_path);
-                        else res = copy_mmap(src_ent_path, dst_ent_path);
-                        if (res != 0)
-                        {
-                            writeToLog("Couldn't copy file\n");
-                            break;
-                        }
-                        writeToLog("File copied\n");
-                        if (set_mtime(dst_ent_path, src_mtime) == 0) writeToLog("Modification time changed\n");
-                        else writeToLog("Failed to change modification time\n");
+                        copy_file(src_ent_path, dst_ent_path, src_size > size_threshold);
                     }
                     break;
                 case FT_NONE:
                     writeToLog("File doesn't exist at the destination\n");
-                    int res;
-                    if (src_size <= size_threshold) res = copy(src_ent_path, dst_ent_path);
-                    else res = copy_mmap(src_ent_path, dst_ent_path);
-                    if (res != 0)
-                    {
-                        writeToLog("Couldn't copy file\n");
-                        break;
-                    }
-                    writeToLog("File copied\n");
-                    if (set_mtime(dst_ent_path, src_mtime) == 0 ) writeToLog("Modification time changed\n");
-                    else writeToLog("Failed to change modification time\n");
+                    copy_file(src_ent_path, dst_ent_path, src_size > size_threshold);
                     break;
                 default:
                     writeToLog("Other type named like the source file exists at the destination\n");
