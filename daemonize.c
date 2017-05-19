@@ -16,42 +16,25 @@
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
-#define USE_SYSLOG 1
 
-#if !USE_SYSLOG
-int logfd = -1;
-#else
 bool uselog = false;
-#endif
 
 void openLogFile()
 {
-    #if USE_SYSLOG
     openlog("filesyncd", LOG_PID, LOG_DAEMON);
-	uselog = true;
-    #else
-    logfd = open("filesyncd.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    #endif
+    uselog = true;
 }
 
 void closeLogFile()
 {
-    #if USE_SYSLOG
     closelog();
-	uselog = false;
-    #else
-    close(logfd);
-    #endif
+    uselog = false;
 }
 
 void writeToLog(const char *str)
 {
-    #if USE_SYSLOG
     if (uselog) syslog(LOG_NOTICE, str);
-    #else
-    if (logfd != -1) write(logfd, str, strlen(str));
-    #endif
-	else printf(str);
+    else printf(str);
 }
 
 void handle_SIGUSR1(int signum)
@@ -112,9 +95,9 @@ static void make_daemon()
 
     /* Change the working directory to the root directory */
     /* or another appropriated directory */
-    /*#if USE_SYSLOG
+    /*
     chdir("/");
-    #endif*/
+    */
 
     /* Close all open file descriptors */
     int x;
@@ -146,21 +129,26 @@ int main(int argc, char *argv[])
     off_t size_threshold = 1000000;
     int sleep_time = 300;
     int i, op = 0;
-    for (i = 1; i < argc; i++)
+    for (i = 1; i < argc; i++) // dla każdego argumentu programu
     {
-        if (argv[i][0] != '-')
+        if (argv[i][0] != '-') // sprawdź czy argument zaczyna się od '-'
         {
             op++;
             if (op == 1) src = argv[i];
             else if (op == 2) dst = argv[i];
             continue;
         }
-        switch (argv[i][1])
+        if (strlen(argv[i]) != 2)
         {
-            case 'R':
+            print_usage();
+            return 0;
+        }
+        switch (argv[i][1]) // sprawdź argument opcjonalny
+        {
+            case 'R': // wywołanie rekurencyjne
                 recursive = true;
                 break;
-            case 't':
+            case 't': // czas między wywołaniami
                 i++;
                 int s = atoi(argv[i]);
                 if (s > 0) sleep_time = s;
@@ -170,7 +158,7 @@ int main(int argc, char *argv[])
                     return 0;
                 }
                 break;
-            case 's':
+            case 's': // próg rozmiaru
                 i++;
                 if (sscanf(argv[i], "%zu", &size_threshold) != 1)
                 {
@@ -178,7 +166,7 @@ int main(int argc, char *argv[])
                     return 0;
                 }
                 break;
-            case 'S':
+            case 'S': // pojedyncza synchronizacja
                 single = true;
                 break;
             default:
@@ -191,29 +179,30 @@ int main(int argc, char *argv[])
         print_usage();
         return 0;
     }
-
+    
+    // pełne ścieżki katalogów
     char real_src[PATH_MAX];
     char real_dst[PATH_MAX];
     realpath(src, real_src);
     realpath(dst, real_dst);
 
-    if (!is_directory(real_src))
+    if (get_file_type(real_src) != FT_DIRECTORY) // sprawdź czy istnieje katalog źródłowy
     {
         printf("Invalid source directory!\n");
         return 0;
     }
-    if (!is_directory(real_dst))
+    if (get_file_type(real_dst) != FT_DIRECTORY) // sprawdź czy istnieje katalog docelowy
     {
         printf("Invalid destination directory!\n");
         return 0;
     }
-    if (strcmp(real_src, real_dst) == 0)
+    if (strcmp(real_src, real_dst) == 0) // sprawdź czy katalogi są różne
     {
         printf("The destination directory must be different from the source directory!\n");
         return 0;
     }
     
-    if (recursive)
+    if (recursive) // jeśli wybrano tryb rekurencyjny, sprawdź czy katalogi nie zawierają się w sobie
     {
         if (path_contains(real_src, real_dst))
         {
@@ -227,7 +216,7 @@ int main(int argc, char *argv[])
         }
     }
     
-    if (single)
+    if (single) // pojedyncza synchronizacja
     {
         run_filesync(real_src, real_dst, recursive, size_threshold);
         return 0;
